@@ -56,6 +56,10 @@ type Config struct {
 	// Parsing outputs clean DDL statements such as reformatted
 	// and void of comments.
 	CleanStatements bool
+	// Whether the Spanner PostgreSQL interface option is being
+	// used or not.  Note that the default Spanner SQL dialect
+	// is MySQL.
+	PostgresInterface bool
 }
 
 // Spanner implements database.Driver for Google Cloud Spanner
@@ -136,11 +140,21 @@ func (s *Spanner) Open(url string) (database.Driver, error) {
 		}
 	}
 
+	postgresInterfaceStr := purl.Query().Get("x-postgres-interface")
+	usePostgres := false
+	if postgresInterfaceStr != "" {
+		usePostgres, err = strconv.ParseBool(postgresInterfaceStr)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	db := &DB{admin: adminClient, data: dataClient}
 	return WithInstance(db, &Config{
-		DatabaseName:    dbname,
-		MigrationsTable: migrationsTable,
-		CleanStatements: clean,
+		DatabaseName:      dbname,
+		MigrationsTable:   migrationsTable,
+		CleanStatements:   clean,
+		PostgresInterface: usePostgres,
 	})
 }
 
@@ -320,10 +334,24 @@ func (s *Spanner) ensureVersionTable() (err error) {
 		return nil
 	}
 
-	stmt := fmt.Sprintf(`CREATE TABLE %s (
-    Version INT64 NOT NULL,
-    Dirty    BOOL NOT NULL
-	) PRIMARY KEY(Version)`, tbl)
+	var createTable string
+	if s.config.PostgresInterface {
+		// PostgreSQL syntax
+		createTable = `CREATE TABLE %s (
+			Version INTEGER NOT NULL,
+			Dirty   BOOL NOT NULL,
+			PRIMARY KEY (Version)
+		)`
+	} else {
+		// MySQL syntax
+		createTable = `CREATE TABLE %s (
+			Version INT64 NOT NULL,
+			Dirty    BOOL NOT NULL
+			) PRIMARY KEY (Version)
+		`
+	}
+
+	stmt := fmt.Sprintf(createTable, tbl)
 
 	op, err := s.db.admin.UpdateDatabaseDdl(ctx, &adminpb.UpdateDatabaseDdlRequest{
 		Database:   s.config.DatabaseName,
